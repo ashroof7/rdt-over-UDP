@@ -12,7 +12,8 @@
 
 #define PKT_DATA_SIZE 1000 // identify data size (in bytes) in a packet
 #define TIME_OUT_VAL 500000ll // value in micro seconds
-#define PORT_NO 7777
+#define SERVER_PORT_NO 7777
+#define CLIENT_PORT_NO 9999
 #define MAX_cwnd 30
 
 // TODO read from file 
@@ -28,10 +29,19 @@ typedef struct{
 	char data[PKT_DATA_SIZE];
 }pkt_t;
 
+typedef struct{
+	int16_t len;
+	int16_t checksum;
+	int32_t seqno;
+}ack_t;
+
 int cwnd = MAX_cwnd;
 unsigned int trans_sock;
 
 int main_sock, worker_sock;
+struct sockaddr_in server_addr, client_addr;
+socklen_t server_addr_len = sizeof(server_addr);
+socklen_t client_addr_len = sizeof(client_addr);
 
 
 pkt_t packet_buff[MAX_SEQ_N];
@@ -132,8 +142,6 @@ void timer_handler(int sig) {
 
 
 
-
-
 #define RQST_BUFF_SZ 100
 // assuming that the coming request will always fit in this buffer
 char request_buff[RQST_BUFF_SZ]; 
@@ -143,13 +151,19 @@ void receive_rqst(){
 }
 
 void rdt(){
- // receive request
- // since we know the server the request message only contains the file path/name
- recv(worker_sock, request_buff, RQST_BUFF_SZ, 0); //here blocking receiving 
- printf("%s\n", request_buff);
  // ACK request
-
+	//TODO seqno ?? for the ack ? and seqno for data pkts add ack size to them ? ?
+	ack_t req_ack = {8, 0, 0} ;
+	int n = sendto(worker_sock, (void *)&req_ack, sizeof(req_ack), 0, (struct sockaddr*) &client_addr, client_addr_len);
+	if (n < 0)
+		perror("ERROR couldn't write to socket");
  // send data
+
+}
+
+
+void connect(){
+	rdt() ;
 }
 
 
@@ -158,10 +172,9 @@ int main(){
 
 	signal(SIGALRM, timer_handler);
 
-
-	in_port_t port_no = PORT_NO;
-	struct sockaddr_in server_addr, client_addr;
-
+	//TODO read from input file
+	in_port_t server_portno = SERVER_PORT_NO;
+	in_port_t client_portno = CLIENT_PORT_NO;
 
 
 	if( (main_sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0){
@@ -169,46 +182,53 @@ int main(){
 		return EXIT_FAILURE;
 	}
 
-
+	// setting server_addr
 	 memset((char *)&server_addr, 0, sizeof(server_addr));// initialization
 	 // 0 init is important since the server_addr.zero[] must be zero
 	 server_addr.sin_family = AF_INET;
 	 server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	 server_addr.sin_port = htons(port_no);
+	 server_addr.sin_port = htons(server_portno);
 
- if ( (bind(main_sock, (struct sockaddr*) &server_addr, sizeof(server_addr)))  < 0){
- 	perror("ERROR on binding socket to server address");
- 	return EXIT_FAILURE;
- }
+	 // setting client_addr
+	 memset((char *) &client_addr, 0, client_addr_len);
 
- int worker_pid;
- socklen_t server_addr_len = sizeof(server_addr);
+	 if ( (bind(main_sock, (struct sockaddr*) &server_addr, sizeof(server_addr)))  < 0){
+	 	perror("ERROR on binding socket to server address");
+	 	return EXIT_FAILURE;
+	 }
 
- while (1) {
- 	int	recvlen = recvfrom(main_sock, request_buff, (size_t)RQST_BUFF_SZ, 0, (struct sockaddr*) &server_addr, &server_addr_len);
+	 int worker_pid;
 
- 	if ( worker_sock < 0) {
- 		perror("ERROR accepting the new connection");
- 		continue;
- 	}
- 	printf("%s\n",request_buff);
- 	worker_pid = fork();
- 	if (worker_pid = fork() < 0) {
- 		perror("ERROR on forking a new worker process");
- 		continue;
- 	}
+	 while (1) {
 
-  if (!worker_pid) { // worker_pid = 0 then we are in the child
-  	signal(SIGALRM, timer_handler);
+ 	// receive request
+ 	// since we know the server the request message only contains the file path/name
+	 	int	recvlen = recvfrom(main_sock, request_buff, (size_t)RQST_BUFF_SZ, 0, (struct sockaddr*) &client_addr, &client_addr_len);
+	 	printf("%s\n",request_buff); 	
+	 	worker_pid = fork();
 
-  	close(main_sock);
-  	exit(EXIT_SUCCESS);
-  } else { // pid != 0 then we are in the parent;
-  	close(worker_sock);
-  }
+	 	if (worker_pid = fork() < 0) {
+	 		perror("ERROR on forking a new worker process");
+	 		continue;
+	 	}
 
-}
-return EXIT_SUCCESS;
+  	if (!worker_pid) { // worker_pid = 0 then we are in the child
+	  	// create the working socket 
+  		if ( (worker_sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0){
+  			perror("Error: Creating the worker socket");
+  			return EXIT_FAILURE;
+  		}
+  		
+  		signal(SIGALRM, timer_handler);
+  		connect();
+  		close(main_sock);
+  		exit(EXIT_SUCCESS);
+   	} else { // pid != 0 then we are in the parent;
+   		close(worker_sock);
+   	}
+
+   }
+   return EXIT_SUCCESS;
 
 
 
