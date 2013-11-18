@@ -56,6 +56,7 @@ char file_buff[MAX_SEQ_N];
 int buff_base = 0;
 char file_name[100];
 FILE *file;
+pkt_t curPkt;
 
 #define close_file(a) fclose(a)
 #define open_file(s) (file = fopen(s, "rb"))
@@ -91,22 +92,31 @@ void process_pkt(int seqno) {
 // assuming that the coming request will always fit in this buffer
 char request_buff[RQST_BUFF_SZ];
 
+void timerHandler(int sig) {
+	int n = sendto(worker_sock, (void *) &curPkt, sizeof(curPkt), 0,
+			(struct sockaddr*) &client_addr, client_addr_len);
+	alarm(1);
+}
+
 void sendData() {
 	FILE *rd = fopen(file_name, "r");
 	int32_t seqno = 0;
 	while (1) {
 		char data[PKT_DATA_SIZE];
-		int32_t n = fread(data, sizeof(char), (sizeof(data) / sizeof(char)), rd);
+		int32_t n = fread(data, sizeof(char), (sizeof(data) / sizeof(char)),
+				rd);
 		if (n > 0) {
 			pkt_t pkt;
 			pkt.checksum = 0;
 			pkt.seqno = seqno;
-			printf("[SendPktSecNo:] %d\n",seqno);
+			printf("[SendPktSecNo:] %d\n", seqno);
 			seqno += n;
 			memcpy(pkt.data, data, n);
 			pkt.len = sizeof(ack_t) + n;
+			memcpy(&curPkt, &pkt, sizeof(pkt));
 			int n = sendto(worker_sock, (void *) &pkt, sizeof(pkt), 0,
 					(struct sockaddr*) &client_addr, client_addr_len);
+			alarm(1);
 			printf("[WaitingAckNo:] %d\n", seqno);
 			int recvlen = recvfrom(worker_sock, request_buff,
 					(size_t) RQST_BUFF_SZ, 0, (struct sockaddr*) &client_addr,
@@ -117,7 +127,7 @@ void sendData() {
 				memcpy(&recievedAck, &request_buff, len);
 				printf("[ReceivingAckNo:] %d\n", recievedAck.seqno);
 			}
-		}else{
+		} else {
 			fclose(rd);
 			break;
 		}
@@ -143,6 +153,7 @@ void connect() {
 }
 
 int main() {
+	signal(SIGALRM, timerHandler);
 	//TODO read from input file
 	in_port_t server_portno = SERVER_PORT_NO;
 	in_port_t client_portno = CLIENT_PORT_NO;

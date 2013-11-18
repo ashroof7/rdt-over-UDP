@@ -112,7 +112,7 @@ int main(int argc, char *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
-	strcpy(file_cname, "cleanCode.pdf");
+	strcpy(file_cname, "test.txt");
 	// char file_cname[] = "oblivion.txt";
 	printf("%s \n", file_cname);
 	socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
