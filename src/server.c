@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <time.h>
+#include <math.h>
 
 
 #define PKT_DATA_SIZE 1000 // identify data size (in bytes) in a packet
@@ -21,6 +22,7 @@
 #define BUFF_SIZE PKT_DATA_SIZE*MAX_SEQ_N //file buffer size in bytes
 #define HEADER_SIZE 8 // size of header in bytes 
 #define PKT_SIZE HEADER_SIZE+PKT_DATA_SIZE
+#define timeval2long(a) (a.tv_sec*1000000 + a.tv_usec)
 
 typedef struct{
 	int16_t len;
@@ -83,12 +85,8 @@ void process_pkt(int seqno){
 
 }
 
-
-
-
-
-long long timer[MAX_cwnd];
-short valid_timer[MAX_cwnd]; // boolean if timer is acive = true, false otherwise.
+long long timers[MAX_cwnd];
+int valid_timer[MAX_cwnd]; // boolean if timer is acive = true, false otherwise.
 int timer_n_index = cwnd; // largest index in the timers array
 
 void send_pkt(int seqno){
@@ -96,19 +94,17 @@ void send_pkt(int seqno){
 	if ( (nbytes = send(trans_sock, &packet_buff[seqno], PKT_SIZE, 0)) < 0){
 		perror("Sending packet");
 	}else {
-  //start timer 
+	  //start timer 
 		valid_timer[seqno-buff_base] = 1;
-		timer[seqno-buff_base] = TIME_OUT_VAL;
+		timers[seqno-buff_base] = TIME_OUT_VAL;
 	}
 
 }
 
 
-timeval welcome_timeval = {TIME_OUT_VAL/1000000, TIME_OUT_VAL%(1000000)};
-itimerval welcome_itimer = {welcome_timeval, welcome_timeval};
+timeval timeout_tv = {TIME_OUT_VAL/1000000, TIME_OUT_VAL%(1000000)};
+itimerval itimer = {timeout_tv, timeout_tv};
 
-long long request_timers[MAX_cwnd];
-unsigned char valid_w_timer[MAX_cwnd]; // boolean if timer is acive = true, false otherwise.
 
 // rename 
 void timer_handler(int sig) {
@@ -120,23 +116,22 @@ void timer_handler(int sig) {
     for(i = 0; i <= timer_n_index; i++){
     	local_timer = clock(); 
     	if(valid_timer[i]){
-    		request_timers[i] -= (welcome_timeval.tv_usec+welcome_timeval.tv_sec*1000000 
-    			+ ((float) local_timer)/CLOCKS_PER_SEC*1000000);
-    		if (request_timers[i] <= 0){
+    		timers[i] -= (timeval2long(timeout_tv) + ((float) local_timer)/CLOCKS_PER_SEC*1000000);
+    		if (timers[i] <= 0){
                 // fire_action(timer[i]);
-    			request_timers[i] = TIME_OUT_VAL;
-    		}else if (request_timers[i] < min_timer){
-    			min_timer = request_timers[i];
+    			timers[i] = TIME_OUT_VAL;
+    		}else if (timers[i] < min_timer){
+    			min_timer = timers[i];
     		}
     	}
     }
 
-    welcome_timeval.tv_sec = min_timer/1000000;
-    welcome_timeval.tv_usec = min_timer%(1000000);
+    timeout_tv.tv_sec = min_timer/1000000;
+    timeout_tv.tv_usec = min_timer%(1000000);
 
-    welcome_itimer.it_interval = welcome_timeval;
-    welcome_itimer.it_value = welcome_timeval;
-    setitimer(ITIMER_REAL, &welcome_itimer, NULL);
+    itimer.it_interval = timeout_tv;
+    itimer.it_value = timeout_tv;
+    setitimer(ITIMER_REAL, &itimer, NULL);
 }
 
 
@@ -157,7 +152,97 @@ void rdt(){
 	int n = sendto(worker_sock, (void *)&req_ack, sizeof(req_ack), 0, (struct sockaddr*) &client_addr, client_addr_len);
 	if (n < 0)
 		perror("ERROR couldn't write to socket");
- // send data
+ 	// FIXME init a timer here ..... must receive ack
+
+ 	// send data
+ 	
+ 	int ack_seqno;
+ 	ack_t pkt_ack;
+ 	
+ 	int r; // no of bytes of the received message (ACK)
+ 	int seqno; // sequence no of the packet to sent, index within the current cwnd-long window
+ 	int m; // the # of bytes read from the file 
+ 	int N = MAX_SEQ_N; // buffer size 
+	int start = 1; // boolean indicator to indicate first buffer fill 
+	int end = MAX_SEQ_N + 1; // end = last packet to send outside the buffer until we meet file end;
+	int prev_cwnd; //used to keep the value of the last cwnd on filling the buffer [0--> N - prev_cwnd]
+	int EOF_reached = 0; // boolean indicator to indicate EOF reached
+	timeval  timer_difference; 
+
+ 	open_file(file_name);
+	// first time = true fill all the buffer
+	m = fread(file_buff, N, PKT_DATA_SIZE, file);
+	if(m < N)
+		end = ceil(1.0*m/PKT_SIZE);
+				
+		
+	for (seqno = buff_base;  ;	seqno = (seqno + 1) % N) {
+		//	for(seqno = buff_base; seqno<buff_base+cwnd ; seqno++){
+		// printf("seqno = %d base = %d\n", seqno, buff_base);
+
+		// send packet 
+		process_pkt(seqno);
+	 	n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
+
+	 	// start timer
+	 	valid_timer[seqno] = 1;
+	 	// set the timer value = timout - (current_timer_max_val - curren_timer);
+	 	getitimer(ITIMER_REAL, &itimer);
+		timer_difference.tv_sec = itimer.it_interval.tv_sec;
+		timer_difference.tv_usec = itimer.it_interval.tv_usec;
+		timers[seqno] = TIME_OUT_VAL - timeval2long(timer_difference);
+	 	
+		//the breaking condition is added inside the loop (after packet send) rather than in the for definition
+		//to avoid the special case when end = N-1; in this case we would go into infinite loop (seqno<=end)
+		//or don't send the last packet (end).
+		if (seqno >= end)
+			break;
+
+		// copy the last window of the buffer (was kept while the whole buffer was copied) [N-cwnd-->N]
+		if (buff_base == 0  && !EOF_reached && !start) {
+			m = fread(file_buff+(N-prev_cwnd)*PKT_DATA_SIZE, prev_cwnd, PKT_DATA_SIZE, file);
+			if(m < prev_cwnd){
+				EOF_reached = 1;
+				end = N-prev_cwnd + ceil(1.0*m/PKT_SIZE);
+				break;
+			}
+		}
+
+		// recieve acks (n acks) and update window boundries
+ 		r = recvfrom(worker_sock, &pkt_ack, sizeof(ack_t), MSG_DONTWAIT, (struct sockaddr*) &client_addr, &client_addr_len);
+	 	while (r > 0){
+	 		ack_seqno = pkt_ack.seqno;
+	 		valid_timer[ack_seqno] = 0;
+	 		if (ack_seqno == buff_base)
+	 			while (valid_timer[ack_seqno++])
+	 				buff_base++;
+			r = recvfrom(worker_sock, &pkt_ack, sizeof(ack_t), MSG_DONTWAIT, (struct sockaddr*) &client_addr, &client_addr_len);
+ 		} 					
+
+		// copy from the start of the buffer except the last cwnd items
+		// the window is at the end of buffer (next base++ --> goes to start)
+		if (buff_base + cwnd == N && m < 10) { 
+			prev_cwnd = cwnd;
+			start = 0;
+			m = fread(file_buff, N-cwnd, PKT_DATA_SIZE, file);
+			if(m < N-cwnd){
+				EOF_reached = 1;
+				end = ceil(1.0*m/PKT_SIZE);
+				break;
+			}
+		}
+
+		// sleep case : seqno = last element in window 
+		// seqno = (base+cwnd)%N;
+		if (seqno == (buff_base+cwnd)/N)
+			sleep(1000);
+
+		buff_base %= N;
+	}
+
+
+
+	
 
 }
 
@@ -205,7 +290,6 @@ int main(){
  	// since we know the server the request message only contains the file path/name
 	 	int	recvlen = recvfrom(main_sock, request_buff, (size_t)RQST_BUFF_SZ, 0, (struct sockaddr*) &client_addr, &client_addr_len);
 	 	printf("%s\n",request_buff); 	
-	 	worker_pid = fork();
 
 	 	if (worker_pid = fork() < 0) {
 	 		perror("ERROR on forking a new worker process");
@@ -218,8 +302,7 @@ int main(){
   			perror("Error: Creating the worker socket");
   			return EXIT_FAILURE;
   		}
-  		
-  		signal(SIGALRM, timer_handler);
+
   		connect();
   		close(main_sock);
   		exit(EXIT_SUCCESS);
