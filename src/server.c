@@ -37,6 +37,7 @@ typedef struct{
 	int32_t seqno;
 }ack_t;
 
+int active_timers = 0; // indicates no of running timer = number of un acked packets
 int cwnd = MAX_cwnd;
 unsigned int trans_sock;
 
@@ -86,44 +87,59 @@ void process_pkt(int seqno){
 }
 
 long long timers[MAX_cwnd];
-int valid_timer[MAX_cwnd]; // boolean if timer is acive = true, false otherwise.
+int valid_timer[MAX_cwnd]; // boolean if timer is acive = 1,2 and 0 is not active ... 
+// 1 indicates that the packet to be resent is a data_pkt. 2 indicates ACK pkt.
 int timer_n_index = cwnd; // largest index in the timers array
 
-void send_pkt(int seqno){
-	int nbytes = 0;
-	if ( (nbytes = send(trans_sock, &packet_buff[seqno], PKT_SIZE, 0)) < 0){
-		perror("Sending packet");
-	}else {
-	  //start timer 
-		valid_timer[seqno-buff_base] = 1;
-		timers[seqno-buff_base] = TIME_OUT_VAL;
-	}
+// void send_pkt(int seqno){
+// 	int nbytes = 0;
+// 	if ( (nbytes = send(trans_sock, &packet_buff[seqno], PKT_SIZE, 0)) < 0){
+// 		perror("Sending packet");
+// 	}else {
+// 	  //start timer 
+// 		valid_timer[seqno-buff_base] = 1;
+// 		timers[seqno-buff_base] = TIME_OUT_VAL;
+// 	}
 
-}
-
+// }
 
 timeval timeout_tv = {TIME_OUT_VAL/1000000, TIME_OUT_VAL%(1000000)};
 itimerval itimer = {timeout_tv, timeout_tv};
 
+//TODO bete3mel eh di ????
+ack_t timer_pkt_ack; // used in timer hadler to receive acks 
 
-// rename 
+
+
 void timer_handler(int sig) {
     //start in method timer
 	clock_t local_timer;
-    long long min_timer = TIME_OUT_VAL; // set to maximum value
+    long long min_timer = TIME_OUT_VAL+1; // set to maximum value
 
     int i;
     for(i = 0; i <= timer_n_index; i++){
     	local_timer = clock(); 
     	if(valid_timer[i]){
     		timers[i] -= (timeval2long(timeout_tv) + ((float) local_timer)/CLOCKS_PER_SEC*1000000);
+    		
     		if (timers[i] <= 0){
-                // fire_action(timer[i]);
-    			timers[i] = TIME_OUT_VAL;
+                // re-send packet and update timer 
+                if (sendto(worker_sock, (void *)&(packet_buff[i]), valid_timer[i]==1?sizeof(pkt_t):sizeof(ack_t),
+                	 0, (struct sockaddr*) &client_addr, client_addr_len) < 0)
+    				timers[i] = TIME_OUT_VAL;
+                else {
+                	valid_timer[i] = 0;	
+                	active_timers--;
+                }
+
     		}else if (timers[i] < min_timer){
     			min_timer = timers[i];
     		}
     	}
+    }
+
+    if (min_timer > TIME_OUT_VAL){ // indicates that no timer is active (based on the intialization of min_timer)
+    	return;
     }
 
     timeout_tv.tv_sec = min_timer/1000000;
@@ -132,6 +148,7 @@ void timer_handler(int sig) {
     itimer.it_interval = timeout_tv;
     itimer.it_value = timeout_tv;
     setitimer(ITIMER_REAL, &itimer, NULL);
+    
 }
 
 
@@ -148,18 +165,32 @@ void receive_rqst(){
 void rdt(){
  // ACK request
 	//TODO seqno ?? for the ack ? and seqno for data pkts add ack size to them ? ?
-	ack_t req_ack = {8, 0, 0} ;
+ 	int r; // no of bytes of the received message (ACK)
+ 	ack_t pkt_ack;
+ 	// adding file size to the request ack : my protocol .. i do what i want :P 
+ 	int filesize = calc_file_size();
+	ack_t req_ack = {8, 0, filesize} ;
 	int n = sendto(worker_sock, (void *)&req_ack, sizeof(req_ack), 0, (struct sockaddr*) &client_addr, client_addr_len);
 	if (n < 0)
 		perror("ERROR couldn't write to socket");
- 	// FIXME init a timer here ..... must receive ack
+	//start timer 
+	valid_timer[0] = 2; // quick and dirty sol: 2 indicates that the packet to resent is ack_t
+	//also put the  ack_pkt in the data_pkts buffer 
+	memcpy(packet_buff, &req_ack, sizeof(ack_t));
 
+	timers[0] = TIME_OUT_VAL;
+	itimer.it_interval = timeout_tv;
+	itimer.it_value = timeout_tv;
+	setitimer(ITIMER_REAL, &itimer, NULL);
+	active_timers++;
+
+	// this call is supposed to block until an ACK is received ... signal handlers are executed in another thread
+	r = recvfrom(worker_sock, &pkt_ack, sizeof(ack_t), 0, (struct sockaddr*) &client_addr, &client_addr_len);
+	
+ 	
  	// send data
- 	
  	int ack_seqno;
- 	ack_t pkt_ack;
  	
- 	int r; // no of bytes of the received message (ACK)
  	int seqno; // sequence no of the packet to sent, index within the current cwnd-long window
  	int m; // the # of bytes read from the file 
  	int N = MAX_SEQ_N; // buffer size 
@@ -185,13 +216,22 @@ void rdt(){
 	 	n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
 
 	 	// start timer
-	 	valid_timer[seqno] = 1;
-	 	// set the timer value = timout - (current_timer_max_val - curren_timer);
-	 	getitimer(ITIMER_REAL, &itimer);
-		timer_difference.tv_sec = itimer.it_interval.tv_sec;
-		timer_difference.tv_usec = itimer.it_interval.tv_usec;
-		timers[seqno] = TIME_OUT_VAL - timeval2long(timer_difference);
-	 	
+		valid_timer[seqno] = 1;
+	 	if (active_timers > 0){
+		 	// set the timer value = timout - (current_timer_max_val - curren_timer);
+		 	getitimer(ITIMER_REAL, &itimer);
+			timer_difference.tv_sec = itimer.it_interval.tv_sec;
+			timer_difference.tv_usec = itimer.it_interval.tv_usec;
+			timers[seqno] = TIME_OUT_VAL - timeval2long(timer_difference);
+	 	}else {
+	 		timers[seqno] = TIME_OUT_VAL;
+			itimer.it_interval = timeout_tv;
+			itimer.it_value = timeout_tv;
+			setitimer(ITIMER_REAL, &itimer, NULL);
+	 	}
+		active_timers++;
+
+
 		//the breaking condition is added inside the loop (after packet send) rather than in the for definition
 		//to avoid the special case when end = N-1; in this case we would go into infinite loop (seqno<=end)
 		//or don't send the last packet (end).
@@ -221,7 +261,7 @@ void rdt(){
 
 		// copy from the start of the buffer except the last cwnd items
 		// the window is at the end of buffer (next base++ --> goes to start)
-		if (buff_base + cwnd == N && m < 10) { 
+		if (buff_base + cwnd == N && !EOF_reached) { 
 			prev_cwnd = cwnd;
 			start = 0;
 			m = fread(file_buff, N-cwnd, PKT_DATA_SIZE, file);
