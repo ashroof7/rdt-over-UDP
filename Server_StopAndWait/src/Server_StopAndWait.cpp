@@ -18,7 +18,7 @@
 #include <time.h>
 
 #define PKT_DATA_SIZE 500 // identify data size (in bytes) in a packet
-#define TIME_OUT_VAL 500000ll // value in micro seconds
+#define TIME_OUT_VAL 500000 // value in micro seconds
 #define SERVER_PORT_NO 7777
 #define CLIENT_PORT_NO 9999
 #define MAX_cwnd 30
@@ -57,6 +57,8 @@ int buff_base = 0;
 char file_name[100];
 FILE *file;
 pkt_t curPkt;
+int global_counter = 0;
+double PLP = 0.2f; 
 
 #define close_file(a) fclose(a)
 #define open_file(s) (file = fopen(s, "rb"))
@@ -93,9 +95,10 @@ void process_pkt(int seqno) {
 char request_buff[RQST_BUFF_SZ];
 
 void timerHandler(int sig) {
+	printf("we will send again from timer handler. \n");
 	int n = sendto(worker_sock, (void *) &curPkt, sizeof(curPkt), 0,
 			(struct sockaddr*) &client_addr, client_addr_len);
-	alarm(1);
+	ualarm(TIME_OUT_VAL, 0);
 }
 
 void sendData() {
@@ -114,15 +117,24 @@ void sendData() {
 			memcpy(pkt.data, data, n);
 			pkt.len = sizeof(ack_t) + n;
 			memcpy(&curPkt, &pkt, sizeof(pkt));
-			int n = sendto(worker_sock, (void *) &pkt, sizeof(pkt), 0,
-					(struct sockaddr*) &client_addr, client_addr_len);
-			alarm(1);
+
+			int flag = ( global_counter% ((int)(PLP*100)) ); 
+			global_counter++;
+			printf("flag ******************** %d \n", flag);
+			if(flag){
+			sendto(worker_sock, (void *) &pkt, sizeof(pkt), 0,
+					(struct sockaddr*) &client_addr, client_addr_len);				
+			}else{
+				printf("[PacketLost]***********************************\n");
+			}
+			ualarm(TIME_OUT_VAL, 0);
 			printf("[WaitingAckNo:] %d\n", seqno);
 			int recvlen = recvfrom(worker_sock, request_buff,
 					(size_t) RQST_BUFF_SZ, 0, (struct sockaddr*) &client_addr,
 					&client_addr_len);
 			int16_t len = request_buff[0] | request_buff[1] << 8;
 			if (len == sizeof(ack_t)) {
+				ualarm(0, 0);
 				ack_t recievedAck;
 				memcpy(&recievedAck, &request_buff, len);
 				printf("[ReceivingAckNo:] %d\n", recievedAck.seqno);
