@@ -30,7 +30,7 @@ char file_cname[100];
 // char read_buffer[BUFFER_SIZE];
 
 // todo remove pkt struct from logic
-#define PKT_DATA_SIZE 1000 // identify data size (in bytes) in a packet
+#define PKT_DATA_SIZE 500 // identify data size (in bytes) in a packet
 typedef struct {
 	int16_t len;
 	int16_t checksum;
@@ -44,6 +44,46 @@ typedef struct {
 	int32_t seqno;
 } ack_t;
 
+void sendAck(int ackNo) {
+	ack_t ack;
+	ack.len = 8;
+	ack.seqno = ackNo;
+	int n = sendto(socket_fd, &ack, sizeof(ack), 0,
+			(struct sockaddr*) &server_addr, server_addr_len);
+}
+
+int rcvPkts() {
+	printf("[RequestFileName:] %s\n", file_cname);
+	FILE *op = fopen(file_cname, "wb");
+	while (1) {
+		int n = recvfrom(socket_fd, buffer, BUFFER_SIZE, 0,
+				(struct sockaddr*) &server_addr, &server_addr_len);
+		int16_t len = buffer[0] | buffer[1] << 8;
+		if (len >= sizeof(ack_t)) { // This is a data PKT 
+			pkt_t received_pkt;
+			memcpy(&received_pkt, buffer, len);
+			printf("[RecievingPkt:]\n");
+			printf("Len = %d \n", received_pkt.len);
+			printf("Check Sum = %d \n", received_pkt.checksum);
+			printf("Seq. No = %d \n", received_pkt.seqno);
+			int AckNo = received_pkt.seqno + (len-sizeof(ack_t));
+			printf("[SendingAckNo:] %d\n", AckNo);
+			sendAck(AckNo);
+			// Then we should write the data in file. 
+			int size = (int) (len - sizeof(ack_t));
+			char dataToBeWritten[((int) (len - sizeof(ack_t)))];
+			memcpy(&dataToBeWritten, &received_pkt, size);
+			fwrite(received_pkt.data, sizeof(char), size, op);
+			if (len < PKT_DATA_SIZE + sizeof(ack_t)) {
+				//close the file and then 
+				fclose(op);
+				return -1;
+			}
+		}
+	}
+	return 0;
+}
+
 int parse_response() {
 	int n = recvfrom(socket_fd, buffer, BUFFER_SIZE, 0,
 			(struct sockaddr*) &server_addr, &server_addr_len);
@@ -54,21 +94,8 @@ int parse_response() {
 
 	if (len == sizeof(ack_t)) {
 		printf("is ACK\n");
-	} else {
-		printf("is data PKT\n");
-
-		FILE *op = fopen(file_cname, "wb");
-		while (1) {
-			if (n <= 0) {
-				fclose(op);
-				break;
-			}
-			fwrite(buffer, sizeof(char), n, op);
-			n = read(socket_fd, buffer, BUFFER_SIZE);
-		}
-
 	}
-
+	return rcvPkts();
 }
 
 int main(int argc, char *argv[]) {
@@ -85,8 +112,9 @@ int main(int argc, char *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
-	char file_cname[] = "oblivion.mp3";
-
+	strcpy(file_cname, "cleanCode.pdf");
+	// char file_cname[] = "oblivion.txt";
+	printf("%s \n", file_cname);
 	socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (socket_fd < 0)
 		perror("ERROR Opening client socket");
@@ -122,6 +150,7 @@ int main(int argc, char *argv[]) {
 		perror("ERROR couldn't write to socket");
 
 	printf("[starting] read_response\n");
+	int seqNo = 0;
 	parse_response();
 	printf("[closing] read_response\n");
 

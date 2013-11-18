@@ -17,7 +17,7 @@
 #include <netinet/in.h>
 #include <time.h>
 
-#define PKT_DATA_SIZE 1000 // identify data size (in bytes) in a packet
+#define PKT_DATA_SIZE 500 // identify data size (in bytes) in a packet
 #define TIME_OUT_VAL 500000ll // value in micro seconds
 #define SERVER_PORT_NO 7777
 #define CLIENT_PORT_NO 9999
@@ -54,7 +54,7 @@ pkt_t packet_buff[MAX_SEQ_N];
 char file_buff[MAX_SEQ_N];
 
 int buff_base = 0;
-char file_name[100] = "oblivion.mp3";
+char file_name[100];
 FILE *file;
 
 #define close_file(a) fclose(a)
@@ -87,75 +87,55 @@ void process_pkt(int seqno) {
 
 }
 
-long long timer[MAX_cwnd];
-short valid_timer[MAX_cwnd]; // boolean if timer is acive = true, false otherwise.
-int timer_n_index = cwnd; // largest index in the timers array
-
-void send_pkt(int seqno) {
-	int nbytes = 0;
-	if ((nbytes = send(trans_sock, &packet_buff[seqno], PKT_SIZE, 0)) < 0) {
-		perror("Sending packet");
-	} else {
-		//start timer
-		valid_timer[seqno - buff_base] = 1;
-		timer[seqno - buff_base] = TIME_OUT_VAL;
-	}
-
-}
-
-timeval welcome_timeval = { TIME_OUT_VAL / 1000000, TIME_OUT_VAL % (1000000) };
-itimerval welcome_itimer = { welcome_timeval, welcome_timeval };
-
-long long request_timers[MAX_cwnd];
-unsigned char valid_w_timer[MAX_cwnd]; // boolean if timer is acive = true, false otherwise.
-
-// rename
-void timer_handler(int sig) {
-	//start in method timer
-	clock_t local_timer;
-	long long min_timer = TIME_OUT_VAL; // set to maximum value
-
-	int i;
-	for (i = 0; i <= timer_n_index; i++) {
-		local_timer = clock();
-		if (valid_timer[i]) {
-			request_timers[i] -= (welcome_timeval.tv_usec
-					+ welcome_timeval.tv_sec * 1000000
-					+ ((float) local_timer) / CLOCKS_PER_SEC * 1000000);
-			if (request_timers[i] <= 0) {
-				// fire_action(timer[i]);
-				request_timers[i] = TIME_OUT_VAL;
-			} else if (request_timers[i] < min_timer) {
-				min_timer = request_timers[i];
-			}
-		}
-	}
-
-	welcome_timeval.tv_sec = min_timer / 1000000;
-	welcome_timeval.tv_usec = min_timer % (1000000);
-
-	welcome_itimer.it_interval = welcome_timeval;
-	welcome_itimer.it_value = welcome_timeval;
-	setitimer(ITIMER_REAL, &welcome_itimer, NULL);
-}
-
 #define RQST_BUFF_SZ 100
 // assuming that the coming request will always fit in this buffer
 char request_buff[RQST_BUFF_SZ];
-void receive_rqst() {
 
+void sendData() {
+	FILE *rd = fopen(file_name, "r");
+	int32_t seqno = 0;
+	while (1) {
+		char data[PKT_DATA_SIZE];
+		int32_t n = fread(data, sizeof(char), (sizeof(data) / sizeof(char)), rd);
+		if (n > 0) {
+			pkt_t pkt;
+			pkt.checksum = 0;
+			pkt.seqno = seqno;
+			printf("[SendPktSecNo:] %d\n",seqno);
+			seqno += n;
+			memcpy(pkt.data, data, n);
+			pkt.len = sizeof(ack_t) + n;
+			int n = sendto(worker_sock, (void *) &pkt, sizeof(pkt), 0,
+					(struct sockaddr*) &client_addr, client_addr_len);
+			printf("[WaitingAckNo:] %d\n", seqno);
+			int recvlen = recvfrom(worker_sock, request_buff,
+					(size_t) RQST_BUFF_SZ, 0, (struct sockaddr*) &client_addr,
+					&client_addr_len);
+			int16_t len = request_buff[0] | request_buff[1] << 8;
+			if (len == sizeof(ack_t)) {
+				ack_t recievedAck;
+				memcpy(&recievedAck, &request_buff, len);
+				printf("[ReceivingAckNo:] %d\n", recievedAck.seqno);
+			}
+		}else{
+			fclose(rd);
+			break;
+		}
+	}
 }
 
 void rdt() {
 	// ACK request
-	//TODO seqno ?? for the ack ? and seqno for data pkts add ack size to them ? ?
 	ack_t req_ack = { 8, 0, 0 };
 	int n = sendto(worker_sock, (void *) &req_ack, sizeof(req_ack), 0,
 			(struct sockaddr*) &client_addr, client_addr_len);
-	if (n < 0)
+	if (n < 0) {
 		perror("ERROR couldn't write to socket");
-	// send data
-
+	} else { // send data
+		printf("[Starting] Sending Data \n");
+		sendData();
+		printf("[Closing] Sending Data\n");
+	}
 }
 
 void connect() {
@@ -163,9 +143,6 @@ void connect() {
 }
 
 int main() {
-
-	signal(SIGALRM, timer_handler);
-
 	//TODO read from input file
 	in_port_t server_portno = SERVER_PORT_NO;
 	in_port_t client_portno = CLIENT_PORT_NO;
@@ -199,10 +176,13 @@ int main() {
 		// since we know the server the request message only contains the file path/name
 		int recvlen = recvfrom(main_sock, request_buff, (size_t) RQST_BUFF_SZ,
 				0, (struct sockaddr*) &client_addr, &client_addr_len);
-		printf("%s\n", request_buff);
+		// copy the file which you want from server here !! 
+		memcpy(&file_name, &request_buff, recvlen);
+		printf("[client_addr_lenquestFile:] %s\n", file_name);
+
 		worker_pid = fork();
 
-		if (worker_pid = fork() < 0) {
+		if (worker_pid < 0) {
 			perror("ERROR on forking a new worker process");
 			continue;
 		}
@@ -213,8 +193,6 @@ int main() {
 				perror("Error: Creating the worker socket");
 				return EXIT_FAILURE;
 			}
-
-			signal(SIGALRM, timer_handler);
 			connect();
 			close(main_sock);
 			exit(EXIT_SUCCESS);
