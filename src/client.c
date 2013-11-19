@@ -17,52 +17,42 @@
 
 #define CLIENT_PORT_NO 9999
 #define SERVER_PORT_NO 7777 
-#define HOSTNAME "localhost"
 #define MAX_cwnd 5
 
-#define MAX_SEQ_N (4*MAX_cwnd) // FIXME how should the client know that  
 
- //TODO fix
-#define PKT_DATA_SIZE 2
+#define PKT_DATA_SIZE 1
 #define HEADER_SIZE 8
+#define MAX_SEQ_N (4*MAX_cwnd) // FIXME how should the client know that  
 #define BUFFER_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
+#define HOSTNAME "localhost"
 
- char request_buffer[BUFFER_SIZE]; //TODO reduce size
- unsigned char buffer[BUFFER_SIZE];
- int socket_fd;
- struct sockaddr_in server_addr, client_addr;
- socklen_t server_addr_len, client_addr_len;
-
-
- char file_cname[100];
-// char read_buffer[BUFFER_SIZE];
-
-// todo remove pkt struct from logic
- typedef struct{
- 	int16_t len;
- 	int16_t checksum;
- 	int32_t seqno;
- 	char data[PKT_DATA_SIZE];
+typedef struct{
+    int16_t len;
+    int16_t checksum;
+    int32_t seqno;
+    char data[PKT_DATA_SIZE];
  }pkt_t;
 
  typedef struct{
- 	int16_t len;
- 	int16_t checksum;
- 	int32_t seqno;
+    int16_t len;
+    int16_t checksum;
+    int32_t seqno;
  }ack_t;
 
 
 
+int socket_fd;
+struct sockaddr_in server_addr, client_addr;
+socklen_t server_addr_len, client_addr_len;
 
- //TODO move
- int filesize;
+char file_cname[] = "test.txt";
+char output_file_name[] = "test_client.txt";
+int filesize;
+
+unsigned char buffer[BUFFER_SIZE];
 int acked[MAX_cwnd]; // boolean indicator for each pkt in the window .. indicates acked or not
 
 int parse_response() {
-    //FIXME you know what to do :D 
-   char* name = "test_client.txt" ;
-   memcpy(file_cname, name, strlen(name));
-
    ack_t ack = {8, 0, -1};
    ack_t recv_ack;
    pkt_t pkt;
@@ -93,7 +83,7 @@ int parse_response() {
  	// int16_t len = buffer[0]|buffer[1]<<8;
  	// printf("len = %d\n",len);
  	// printf("%d %d %d %d\n",(int) buffer[0], (int) buffer[1], (int) buffer[2], (int) buffer[3]);
-    FILE *op = fopen(file_cname, "wb");
+    FILE *op = fopen(output_file_name, "wb");
 
     //FIXME move to top
     int i;
@@ -190,21 +180,21 @@ int parse_response() {
 }
 
 
-    int main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
 
-      in_port_t server_port_no = SERVER_PORT_NO;
-      in_port_t client_port_no = CLIENT_PORT_NO;
-      struct hostent *server;
-      char *hostname = HOSTNAME;
+    in_port_t server_port_no = SERVER_PORT_NO;
+    in_port_t client_port_no = CLIENT_PORT_NO;
+    struct hostent *server;
+    char hostname[] = HOSTNAME;
 
-      server = gethostbyname(hostname);
+    server = gethostbyname(hostname);
 
-      if (server == NULL ) {
+    if (server == NULL ) {
        perror("ERROR no such host exists");
        exit(EXIT_FAILURE);
-   }
+    }
 
-   char file_cname[] = "test.txt";
+   // char file_cname[] = "test.txt";
 
    socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
    if (socket_fd < 0)
@@ -232,13 +222,8 @@ int parse_response() {
     	return EXIT_FAILURE;
     }
 
-
- // TODO 
- // request_buffer = file_cname;
-    memcpy(&request_buffer, file_cname, sizeof(file_cname));
-
  	//send to server
-    int n = sendto(socket_fd, request_buffer, strlen(request_buffer) , 0, (struct sockaddr*) &server_addr, server_addr_len);
+    int n = sendto(socket_fd, file_cname, strlen(file_cname) , 0, (struct sockaddr*) &server_addr, server_addr_len);
     if (n < 0)
     	perror("ERROR couldn't write to socket");
 
@@ -250,4 +235,5 @@ int parse_response() {
     close(socket_fd);
 
     return EXIT_SUCCESS;
+
 }
