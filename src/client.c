@@ -23,7 +23,7 @@
 #define MAX_SEQ_N (4*MAX_cwnd) // FIXME how should the client know that  
 
  //TODO fix
-#define PKT_DATA_SIZE 1
+#define PKT_DATA_SIZE 2
 #define HEADER_SIZE 8
 #define BUFFER_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
 

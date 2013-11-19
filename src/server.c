@@ -11,11 +11,15 @@
 #include <math.h>
 
 
-#define PKT_DATA_SIZE 1 // identify data size (in bytes) in a packet
+#define PKT_DATA_SIZE 2 // identify data size (in bytes) in a packet
 #define TIME_OUT_VAL 1000000ll // value in micro seconds 1 secs
 #define SERVER_PORT_NO 7777
 #define CLIENT_PORT_NO 9999
 #define MAX_cwnd 5
+#define PLP 0.1
+
+int pkt_cnt = 0;
+int loss_cnt = PLP * 100;
 
 // TODO read from file 
 #define MAX_SEQ_N (4*MAX_cwnd)
@@ -224,7 +228,7 @@ void rdt(){
 	// first time = true fill all the buffer
 	// m = fread(file_buff, N, PKT_DATA_SIZE, file);
 	m = fread(file_buff, PKT_DATA_SIZE, N, file);
-	printf("read from file %d bytes\n",m);
+	printf("read from file %d bytes\n",m*PKT_DATA_SIZE);
 	printf("buffer = %s\n",file_buff);
 
 	if (m < 0)
@@ -232,7 +236,7 @@ void rdt(){
 	
 
 	if(m < N){
-		end = ceil(1.0*m/PKT_SIZE);
+		end = m;
 		printf("file size is less than 1 buffer");
 	}
 
@@ -249,23 +253,24 @@ void rdt(){
 		printf("seqno = %d base = %d\n", seqno, buff_base);
 		// send packet 
 		process_pkt(seqno, data_offset);
-		n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
+		if((pkt_cnt++)%loss_cnt)
+			n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
 		printf("sent pkt[%c] seqno = %d\n", packet_buff[seqno].data[0], packet_buff[seqno].seqno);
 	 	// start timer
 		valid_timer[seqno] = 1;
-		// if (active_timers > 0){
-		//  	// set the timer value = timout - (current_timer_max_val - curren_timer);
-		// 	getitimer(ITIMER_REAL, &itimer);
-		// 	timer_difference.tv_sec = itimer.it_interval.tv_sec;
-		// 	timer_difference.tv_usec = itimer.it_interval.tv_usec;
-		// 	timers[seqno] = TIME_OUT_VAL - timeval2long(timer_difference);
-		// }else {
-		// 	timers[seqno] = TIME_OUT_VAL;
-		// 	itimer.it_interval = timeout_tv;
-		// 	itimer.it_value = timeout_tv;
-		// 	setitimer(ITIMER_REAL, &itimer, NULL);
-		// }
-		// active_timers++;
+		if (active_timers > 0){
+		 	// set the timer value = timout - (current_timer_max_val - curren_timer);
+			getitimer(ITIMER_REAL, &itimer);
+			timer_difference.tv_sec = itimer.it_interval.tv_sec;
+			timer_difference.tv_usec = itimer.it_interval.tv_usec;
+			timers[seqno] = TIME_OUT_VAL - timeval2long(timer_difference);
+		}else {
+			timers[seqno] = TIME_OUT_VAL;
+			itimer.it_interval = timeout_tv;
+			itimer.it_value = timeout_tv;
+			setitimer(ITIMER_REAL, &itimer, NULL);
+		}
+		active_timers++;
 
 
 		//the breaking condition is added inside the loop (after packet send) rather than in the for definition
