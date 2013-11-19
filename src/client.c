@@ -17,10 +17,10 @@
 
 #define CLIENT_PORT_NO 9999
 #define SERVER_PORT_NO 7777 
-#define MAX_cwnd 50
+#define MAX_cwnd 10
 
 
-#define PKT_DATA_SIZE (1024*16)
+#define PKT_DATA_SIZE (1)
 #define HEADER_SIZE 8
 #define MAX_SEQ_N (4*MAX_cwnd) // FIXME how should the client know that  
 #define BUFFER_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
@@ -45,8 +45,12 @@ int socket_fd;
 struct sockaddr_in server_addr, client_addr;
 socklen_t server_addr_len, client_addr_len;
 
-char file_cname[] = "oblivion.mp3";
-char output_file_name[] = "oblivion_client.mp3";
+// char file_cname[] = "oblivion.mp3";
+// char output_file_name[] = "oblivion_client.mp3";
+
+char file_cname[] = "test.txt";
+char output_file_name[] = "test_client.txt";
+
 int filesize;
 
 unsigned char buffer[BUFFER_SIZE];
@@ -72,13 +76,10 @@ int parse_response() {
         n = sendto(socket_fd, &ack, sizeof(ack_t), 0, (struct sockaddr*) &server_addr, server_addr_len);
         printf("receiv ACK pkt sqno = %d\n",ack.seqno);
 
-
-        printf(">>>>> wrong before  == %d\n",pkt.seqno);
         r = recvfrom(socket_fd, &pkt, sizeof(pkt_t), 0, (struct sockaddr*) &server_addr, &server_addr_len);
-        printf("receiv pkt sqno = %d\n",pkt.seqno);  
 
         if (pkt.len != sizeof(ack_t))    {
-            printf("breaaaaak\n");
+            // printf("breaaaaak\n");
             break;
         }
     }
@@ -103,33 +104,30 @@ int parse_response() {
         // Hence the seqno will overlap from the server (no need to take mod here)
 
         seqno = pkt.seqno;
-        printf("received pkt seqno = %d\n",seqno);
         int pkt_index = ((int)ceil(1.0*seqno/PKT_DATA_SIZE)) % MAX_SEQ_N ;
-        printf("~~~~~pkt[%c] index = %d\n",pkt.data[0],pkt_index);
-        // sleep(2);
+
         // means that the server is sending a previously acked pkt --> resend ack
         if (pkt_index < base){
-            printf("seqno < base\n");
             ack.len = sizeof(ack_t);
             ack.seqno = seqno;
             n = sendto(socket_fd, &ack, sizeof(ack_t), 0, (struct sockaddr*) &server_addr, server_addr_len);            
-            printf("send ACK OLD pkt sqno = %d\n",seqno);
+            // printf("send ACK OLD pkt sqno = %d\n",seqno);
         } else if ( (base+ws < MAX_PKT_CNT && pkt_index > base + ws) 
             || (base+ws >= MAX_PKT_CNT && pkt_index > (base + ws)%MAX_PKT_CNT &&pkt_index < base )  ) {
             // this case should never happen
             perror("receiving a packet with a seqno > window");
         }else {
-            printf("general case\n");
-            printf("  >> base = %d  seqno = %d\n",base,seqno);
+            // printf("general case\n");
+            // printf("  >> base = %d  seqno = %d\n",base,seqno);
 
 
             memcpy(&(buffer[seqno%BUFFER_SIZE]), &(pkt.data), PKT_DATA_SIZE );
-            printf("  >> buffer = %s\n",buffer);
+            // printf("  >> buffer = %s\n",buffer);
             filesize -= PKT_DATA_SIZE;    
 
             acked[pkt_index] = 1 ;
 
-            printf("acked pkt %d\n", ((int)ceil(1.0*seqno/PKT_DATA_SIZE))%MAX_SEQ_N);
+            // printf("acked pkt %d\n", ((int)ceil(1.0*seqno/PKT_DATA_SIZE))%MAX_SEQ_N);
 
 
             while(base<MAX_SEQ_N && acked[base]){
@@ -137,7 +135,7 @@ int parse_response() {
                 base=(base + 1)%MAX_PKT_CNT; // move window to pass all acked pkts
             }
 
-            printf(" >>>> base = %d\n",base );
+            // printf(" >>>> base = %d\n",base );
 
             if (base == 0 & !start ){
                 // write the last window if the buffer.
@@ -158,16 +156,14 @@ int parse_response() {
 
             ack.seqno = seqno ;
             n = sendto(socket_fd, &ack, sizeof(ack_t), 0, (struct sockaddr*) &server_addr, server_addr_len);            
-            printf("send ACK pkt sqno = %d\n",seqno);
+            // printf("send ACK pkt sqno = %d\n",seqno);
 
 
             if(filesize <= 0){
 
-                    printf("base = %d\n", base);
                     // in the next line filesize should be = 0 or in negative ?? --> the data of the last packet was < PKT_DATA_SIZE
                     if (base < MAX_SEQ_N - ws || start){ // i'm sure that the last ws of the buffer is written to the file
                         //write from base pkt 0 to pkt base
-                        printf("start ya kabeeeeer\n" );
                         fwrite(&buffer, sizeof(char), base*PKT_DATA_SIZE + filesize, op);        
                     }
 
@@ -178,9 +174,8 @@ int parse_response() {
                 }   
             }
 
-            printf("\n\n");
+            // printf("\n\n");
             r = recvfrom(socket_fd, &pkt, sizeof(pkt_t), 0, (struct sockaddr*) &server_addr, &server_addr_len);
-                    printf("received pkt seqno = %d\n",pkt.seqno);
 
     }
     fclose(op);

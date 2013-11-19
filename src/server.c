@@ -18,13 +18,13 @@
 #include <math.h>
 
 #define PLP 0.1
-#define MAX_cwnd 50
+#define MAX_cwnd 10
 #define SERVER_PORT_NO 7777
 #define CLIENT_PORT_NO 9999
 #define RAND_SEED 3571
 
-#define PKT_DATA_SIZE (1024*16) // identify data size (in bytes) in a packet
-#define TIME_OUT_VAL 100000ll // value in micro seconds 0.1 secs
+#define PKT_DATA_SIZE (1) // identify data size (in bytes) in a packet
+#define TIME_OUT_VAL 1000000ll // value in micro seconds 1 secs
 #define MAX_SEQ_N (4*MAX_cwnd)
 #define BUFF_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
 #define HEADER_SIZE 8 // size of header in bytes 
@@ -34,6 +34,8 @@
 #define close_file(a) fclose(a)
 #define open_file(s) (file = fopen(s, "rb"))
 #define max(a,b) ((a)>(b)?(a):(b))
+#define min(a,b) ((a)>(b)?(b):(a))
+
 
 
 typedef struct{
@@ -114,16 +116,19 @@ void process_pkt(int seqno, int data_offset){
 
 // next 2 functions are used to handle congestion control
 void packet_loss_report(){
-	prev_cwnd = cwnd;
 	ssthreshold = cwnd/2;
 	cwnd = max(1, cwnd/2);
+	prev_cwnd = cwnd;
 	printf("new cwnd %d\n",cwnd);
 }
 
 void packet_received_report(){
 	// if the current cwnd is above the ssthreshold then go for additive increase
 	// other case we are in the slowstart phase multiply cwnd by 2
+
 	cwnd = cwnd>ssthreshold? cwnd+1 : (cwnd<<1);
+	cwnd = min(cwnd, MAX_cwnd);
+
 }
 
 void timer_handler(int sig) {
@@ -149,6 +154,7 @@ void timer_handler(int sig) {
     				0, (struct sockaddr*) &client_addr, client_addr_len) ;
                 printf("timer expired pkt %d\n", i);
                 packet_loss_report();
+                printf("gowa el handler cwnd = %d\n",cwnd);
     			if (temp< 0)
     				timers[i] = TIME_OUT_VAL;
     			else {
@@ -164,6 +170,7 @@ void timer_handler(int sig) {
     }
 
     if (min_timer > TIME_OUT_VAL){ // indicates that no timer is active (based on the intialization of min_timer)
+    	// printf("return from timer handler\n");
     	return;
     }
 
@@ -173,6 +180,7 @@ void timer_handler(int sig) {
     itimer.it_interval = timeout_tv;
     itimer.it_value = timeout_tv;
     setitimer(ITIMER_REAL, &itimer, NULL);    
+    // printf("return from timer handler\n");
 }
 
 
@@ -235,7 +243,7 @@ void rdt(){
 	// first time = true fill all the buffer
 	m = fread(file_buff, PKT_DATA_SIZE, N, file);
 	// printf("read from file %d bytes\n",m*PKT_DATA_SIZE);
-	// printf("buffer = %s\n",file_buff);
+	printf("buffer = %s\n",file_buff);
 
 	if (m < 0)
 		perror("couldn't read from file");
@@ -247,17 +255,17 @@ void rdt(){
 
 
 	for (seqno = buff_base;  ;	seqno = (seqno + 1) % N) {
-		printf("cwnd = %d seqno = %d base = %d\n", cwnd,seqno, buff_base);
+		printf("cwnd = %d seqno = %d base = %d  end = %d\n", cwnd, seqno, buff_base, end);
 		
 		// send packet 
 		process_pkt(seqno, data_offset);
 		// if((pkt_cnt++)%loss_cnt){
 		if ( (rand()%loss_cnt) > 0 ){
-			// printf("sending\n");
 			n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
-			// printf("sent pkt[%c] seqno = %d\n", packet_buff[seqno].data[0], packet_buff[seqno].seqno);
+			printf("sent pkt[%c] seqno = %d\n", packet_buff[seqno].data[0], packet_buff[seqno].seqno);
 		}else {
 			printf("loss \n");
+			packet_loss_report();
 		}
 	 	
 	 	// start timer
@@ -281,6 +289,7 @@ void rdt(){
 		//the breaking condition is added inside the loop (after packet send) rather than in the for definition
 		//to avoid the special case when end = N-1; in this case we would go into infinite loop (seqno<=end)
 		//or don't send the last packet (end).
+
 		if (seqno ==  end ){
 			printf("server is leaving ... FUCK this shit\n");
 			break;
@@ -313,9 +322,9 @@ void rdt(){
 				// printf("buffer = %s\n",file_buff);
 
 				if(m < prev_cwnd){
+					printf("EOF reached\n");
 					EOF_reached = 1;
 					end = N-prev_cwnd + m;
-					// break;
 				}
 			}
 		}
@@ -333,7 +342,6 @@ void rdt(){
 					printf("EOF reached\n");
 					EOF_reached = 1;
 					end = m;
-					// break;
 				}
 			}
 			// printf("\n");
@@ -415,6 +423,8 @@ int main(){
   				return EXIT_FAILURE;
   			}
   			printf("pid = %d\n", getpid());
+  				signal(SIGALRM, timer_handler);
+
   			connect();
   			exit(EXIT_SUCCESS);
    		} else { // pid != 0 then we are in the parent;
