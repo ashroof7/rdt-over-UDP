@@ -18,12 +18,13 @@
 #include <math.h>
 
 #define PLP 0.1
-#define MAX_cwnd 5
+#define MAX_cwnd 50
 #define SERVER_PORT_NO 7777
 #define CLIENT_PORT_NO 9999
+#define RAND_SEED 3571
 
-#define PKT_DATA_SIZE 1 // identify data size (in bytes) in a packet
-#define TIME_OUT_VAL 1000000ll // value in micro seconds 1 secs
+#define PKT_DATA_SIZE (1024*16) // identify data size (in bytes) in a packet
+#define TIME_OUT_VAL 100000ll // value in micro seconds 0.1 secs
 #define MAX_SEQ_N (4*MAX_cwnd)
 #define BUFF_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
 #define HEADER_SIZE 8 // size of header in bytes 
@@ -32,6 +33,7 @@
 #define timeval2long(a) (a.tv_sec*1000000 + a.tv_usec)
 #define close_file(a) fclose(a)
 #define open_file(s) (file = fopen(s, "rb"))
+#define max(a,b) ((a)>(b)?(a):(b))
 
 
 typedef struct{
@@ -54,6 +56,10 @@ int active_timers = 0; // indicates no of running timer = number of un acked pac
 int cwnd = MAX_cwnd; // size of sliding window moving in buffer
 //TODO rename --> window base or base 
 int buff_base = 0; // base of the moving window
+int ssthreshold = (MAX_cwnd/2);
+int prev_cwnd = cwnd;//used to keep the value of the last cwnd on filling the buffer [0--> N - prev_cwnd]
+
+
 
 // main params
 int main_sock, worker_sock;
@@ -106,23 +112,44 @@ void process_pkt(int seqno, int data_offset){
  // pkt.checksum = ?
 }
 
+// next 2 functions are used to handle congestion control
+void packet_loss_report(){
+	prev_cwnd = cwnd;
+	ssthreshold = cwnd/2;
+	cwnd = max(1, cwnd/2);
+	printf("new cwnd %d\n",cwnd);
+}
+
+void packet_received_report(){
+	// if the current cwnd is above the ssthreshold then go for additive increase
+	// other case we are in the slowstart phase multiply cwnd by 2
+	cwnd = cwnd>ssthreshold? cwnd+1 : (cwnd<<1);
+}
+
 void timer_handler(int sig) {
     //start in method timer
 	clock_t local_timer;
     long long min_timer = TIME_OUT_VAL+1; // set to maximum value
 
+    if(active_timers<1)
+    	return;
+
     int i;
     //TODO azbot el leela di :D 
     // for(i = 0; i <= timer_n_index; i++){
-    for(i = 0; i <= MAX_SEQ_N; i++){
+    for(i = 0; i < MAX_SEQ_N; i++){
     	local_timer = clock(); 
     	if(valid_timer[i]>0){ // recall 0 = notset   -1 not intialized   1 pkt_timer    2 ack_timer
     		timers[i] -= (timeval2long(timeout_tv) + ((float) local_timer)/CLOCKS_PER_SEC*1000000);
     		
     		if (timers[i] <= 0){
                 // re-send packet and update timer 
-    			if (sendto(worker_sock, (void *)&(packet_buff[i]), (valid_timer[i]==1)?sizeof(pkt_t):sizeof(ack_t),
-    				0, (struct sockaddr*) &client_addr, client_addr_len) < 0)
+                // printf(" i = %d 3and el timer a7ee a7ee  = %d \n",i, packet_buff[i].seqno);
+                int temp =  sendto(worker_sock, (void *)&(packet_buff[i]), (valid_timer[i]==1)?sizeof(pkt_t):sizeof(ack_t),
+    				0, (struct sockaddr*) &client_addr, client_addr_len) ;
+                printf("timer expired pkt %d\n", i);
+                packet_loss_report();
+    			if (temp< 0)
     				timers[i] = TIME_OUT_VAL;
     			else {
     				valid_timer[i] = 0;	
@@ -130,6 +157,7 @@ void timer_handler(int sig) {
     			}
 
     		}else if (timers[i] < min_timer){
+    			// printf("min timer index = %d\n", i);
     			min_timer = timers[i];
     		}
     	}
@@ -151,14 +179,14 @@ void timer_handler(int sig) {
 void hand_shake(){
 	// adding file size to the request ack : my protocol .. i do what i want :P 
  	int filesize = calc_file_size();
- 	printf("filesize = %d\n", filesize);
+ 	// printf("filesize = %d\n", filesize);
 
 	ack_t pkt_ack;
  	ack_t req_ack = {8, 0, filesize} ;
  	int n = sendto(worker_sock, (void *)&req_ack, sizeof(req_ack), 0, (struct sockaddr*) &client_addr, client_addr_len);
  	if (n < 0)
  		perror("ERROR couldn't write to socket");
- 	printf("sent request ACK\n");
+ 	// printf("sent request ACK\n");
 
 	//start timer 
 	valid_timer[0] = 2; // quick and dirty sol: 2 indicates that the packet to resent is ack_t
@@ -172,9 +200,13 @@ void hand_shake(){
 	active_timers++;
 
 	
-	printf("going to wait for ack ack\n");
+	// printf("going to wait for ack ack\n");
 	// this call is supposed to block until an ACK is received ... signal handlers are executed in another thread
 	recvfrom(worker_sock, &pkt_ack, sizeof(ack_t), 0, (struct sockaddr*) &client_addr, &client_addr_len);
+	active_timers--;
+	valid_timer[0] = -1;
+
+	// printf("ack ack %d \n", pkt_ack.seqno);
 }
 
 
@@ -189,7 +221,7 @@ void rdt(){
  	int N = MAX_SEQ_N; // pkt buffer length
 	int start = 1; // boolean indicator to indicate first buffer fill 
 	int end = MAX_SEQ_N + 1; // end = last packet to send outside the buffer until we meet file end;
-	int prev_cwnd; //used to keep the value of the last cwnd on filling the buffer [0--> N - prev_cwnd]
+	// int prev_cwnd; //used to keep the value of the last cwnd on filling the buffer [0--> N - prev_cwnd]
 	int EOF_reached = 0; // boolean indicator to indicate EOF reached
 	int data_offset = 0; // data offset from the start of the file
 	int ack_seqno;
@@ -197,31 +229,36 @@ void rdt(){
 	timeval  timer_difference; 
 
 
-	printf("buffer = %s\n",file_buff);
+	// printf("buffer = %s\n",file_buff);
 
-	printf("starting to read from file N = %d  PKT_DATA_SIZE = %d\n",N,PKT_DATA_SIZE);
+	// printf("starting to read from file N = %d  PKT_DATA_SIZE = %d\n",N,PKT_DATA_SIZE);
 	// first time = true fill all the buffer
 	m = fread(file_buff, PKT_DATA_SIZE, N, file);
-	printf("read from file %d bytes\n",m*PKT_DATA_SIZE);
-	printf("buffer = %s\n",file_buff);
+	// printf("read from file %d bytes\n",m*PKT_DATA_SIZE);
+	// printf("buffer = %s\n",file_buff);
 
 	if (m < 0)
 		perror("couldn't read from file");
 	
 	if(m < N){
 		end = m;
-		printf("file size is less than 1 buffer");
+		// printf("file size is less than 1 buffer");
 	}
 
 
 	for (seqno = buff_base;  ;	seqno = (seqno + 1) % N) {
-		printf("seqno = %d base = %d\n", seqno, buff_base);
+		printf("cwnd = %d seqno = %d base = %d\n", cwnd,seqno, buff_base);
 		
 		// send packet 
 		process_pkt(seqno, data_offset);
-		// if((pkt_cnt++)%loss_cnt)
+		// if((pkt_cnt++)%loss_cnt){
+		if ( (rand()%loss_cnt) > 0 ){
+			// printf("sending\n");
 			n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
-		printf("sent pkt[%c] seqno = %d\n", packet_buff[seqno].data[0], packet_buff[seqno].seqno);
+			// printf("sent pkt[%c] seqno = %d\n", packet_buff[seqno].data[0], packet_buff[seqno].seqno);
+		}else {
+			printf("loss \n");
+		}
 	 	
 	 	// start timer
 		valid_timer[seqno] = 1;
@@ -255,7 +292,8 @@ void rdt(){
 			//FIXME refactor ack_seqno to pkt_no
 			ack_seqno = (pkt_ack.seqno / PKT_DATA_SIZE) % MAX_SEQ_N;
 			// ack_seqno = pkt_ack.seqno ;
-			printf(" >>> received ACK seqno = %d  %d\n",pkt_ack.seqno, ack_seqno);
+			// printf(" >>> received ACK seqno = %d  %d\n",pkt_ack.seqno, ack_seqno);
+			packet_received_report();
 			valid_timer[ack_seqno] = 0;
 			if (ack_seqno == buff_base)
 				while (valid_timer[ack_seqno++]==0){ // if a valid timer ==0 then the timer is off
@@ -266,13 +304,13 @@ void rdt(){
 		} 					
 
 
-		printf(">>>>> buff_base = %d\n",buff_base);
+		// printf(">>>>> buff_base = %d\n",buff_base);
 		// copy the last window of the buffer (was kept while the whole buffer was copied) [N-cwnd-->N]
 		if (buff_base == N ) {
 			data_offset+=BUFF_SIZE;
 			if ( !EOF_reached && !start){
 				m = fread(file_buff+(N-prev_cwnd)*PKT_DATA_SIZE, PKT_DATA_SIZE, prev_cwnd, file);
-				printf("buffer = %s\n",file_buff);
+				// printf("buffer = %s\n",file_buff);
 
 				if(m < prev_cwnd){
 					EOF_reached = 1;
@@ -286,10 +324,10 @@ void rdt(){
 		// copy from the start of the buffer except the last cwnd items
 		// the window is at the end of buffer (next base++ --> goes to start)
 			if (buff_base + cwnd == N && !EOF_reached) { 
-				prev_cwnd = cwnd;
+				// prev_cwnd = cwnd;
 				start = 0;
 				m = fread(file_buff, PKT_DATA_SIZE, N-cwnd, file);
-				printf("buffer = %s\n",file_buff);
+				// printf("buffer = %s\n",file_buff);
 
 				if(m < N-cwnd){
 					printf("EOF reached\n");
@@ -298,7 +336,7 @@ void rdt(){
 					// break;
 				}
 			}
-			printf("\n");
+			// printf("\n");
 
 			if (seqno == (buff_base+cwnd)%N && !start){
 				printf("hanaam nena\n");
@@ -310,6 +348,9 @@ void rdt(){
 
 
 void connect(){
+	// intialize the starting cwnd
+	cwnd  = 1;
+	ssthreshold = MAX_SEQ_N/2;
 	//intializing valid_timer
 	int i;
 	for(i=0; i < MAX_SEQ_N; i++)
@@ -318,7 +359,7 @@ void connect(){
 	open_file(file_name);
 	hand_shake();
 
-	printf ("starting data transfer\n");
+	// printf ("starting data transfer\n");
 	rdt();
 }
 
@@ -354,7 +395,6 @@ int main(){
 	}
 
 	int worker_pid;
-	printf("mother pid = %d\n", getpid());
 	while (1) {
 
  		// receive request

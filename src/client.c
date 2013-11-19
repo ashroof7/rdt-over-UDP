@@ -17,10 +17,10 @@
 
 #define CLIENT_PORT_NO 9999
 #define SERVER_PORT_NO 7777 
-#define MAX_cwnd 5
+#define MAX_cwnd 50
 
 
-#define PKT_DATA_SIZE 1
+#define PKT_DATA_SIZE (1024*16)
 #define HEADER_SIZE 8
 #define MAX_SEQ_N (4*MAX_cwnd) // FIXME how should the client know that  
 #define BUFFER_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
@@ -45,8 +45,8 @@ int socket_fd;
 struct sockaddr_in server_addr, client_addr;
 socklen_t server_addr_len, client_addr_len;
 
-char file_cname[] = "test.txt";
-char output_file_name[] = "test_client.txt";
+char file_cname[] = "oblivion.mp3";
+char output_file_name[] = "oblivion_client.mp3";
 int filesize;
 
 unsigned char buffer[BUFFER_SIZE];
@@ -72,8 +72,11 @@ int parse_response() {
         n = sendto(socket_fd, &ack, sizeof(ack_t), 0, (struct sockaddr*) &server_addr, server_addr_len);
         printf("receiv ACK pkt sqno = %d\n",ack.seqno);
 
+
+        printf(">>>>> wrong before  == %d\n",pkt.seqno);
         r = recvfrom(socket_fd, &pkt, sizeof(pkt_t), 0, (struct sockaddr*) &server_addr, &server_addr_len);
-        printf("receiv pkt sqno = %d\n",pkt.seqno);        
+        printf("receiv pkt sqno = %d\n",pkt.seqno);  
+
         if (pkt.len != sizeof(ack_t))    {
             printf("breaaaaak\n");
             break;
@@ -174,7 +177,11 @@ int parse_response() {
                     break;
                 }   
             }
+
+            printf("\n\n");
             r = recvfrom(socket_fd, &pkt, sizeof(pkt_t), 0, (struct sockaddr*) &server_addr, &server_addr_len);
+                    printf("received pkt seqno = %d\n",pkt.seqno);
+
     }
     fclose(op);
 }
