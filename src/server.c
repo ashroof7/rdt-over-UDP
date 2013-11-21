@@ -17,14 +17,14 @@
 #include <time.h>
 #include <math.h>
 
-#define PLP 0.1
-#define MAX_cwnd 10
+#define PLP 0.1 // packet loss probabilty 
+#define MAX_cwnd 50
 #define SERVER_PORT_NO 7777
 #define CLIENT_PORT_NO 9999
 #define RAND_SEED 3571
 
-#define PKT_DATA_SIZE (1) // identify data size (in bytes) in a packet
-#define TIME_OUT_VAL 1000000ll // value in micro seconds 1 secs
+#define PKT_DATA_SIZE (1024) // identify data size (in bytes) in a packet
+#define TIME_OUT_VAL 10000ll // value in micro seconds 0.01 secs
 #define MAX_SEQ_N (4*MAX_cwnd)
 #define BUFF_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
 #define HEADER_SIZE 8 // size of header in bytes 
@@ -74,6 +74,7 @@ FILE *file;
 
 // buffers
 char file_name[100]; // assuming that the coming request will only contain a file name
+int filesize = 0;
 pkt_t packet_buff[MAX_SEQ_N];
 char file_buff[BUFF_SIZE];
 
@@ -116,6 +117,7 @@ void process_pkt(int seqno, int data_offset){
 
 // next 2 functions are used to handle congestion control
 void packet_loss_report(){
+	// not called -- pulling back congestion control
 	ssthreshold = cwnd/2;
 	cwnd = max(1, cwnd/2);
 	prev_cwnd = cwnd;
@@ -123,9 +125,10 @@ void packet_loss_report(){
 }
 
 void packet_received_report(){
+	// not called -- pulling back congestion control
+
 	// if the current cwnd is above the ssthreshold then go for additive increase
 	// other case we are in the slowstart phase multiply cwnd by 2
-
 	cwnd = cwnd>ssthreshold? cwnd+1 : (cwnd<<1);
 	cwnd = min(cwnd, MAX_cwnd);
 
@@ -140,8 +143,6 @@ void timer_handler(int sig) {
     	return;
 
     int i;
-    //TODO azbot el leela di :D 
-    // for(i = 0; i <= timer_n_index; i++){
     for(i = 0; i < MAX_SEQ_N; i++){
     	local_timer = clock(); 
     	if(valid_timer[i]>0){ // recall 0 = notset   -1 not intialized   1 pkt_timer    2 ack_timer
@@ -149,12 +150,9 @@ void timer_handler(int sig) {
     		
     		if (timers[i] <= 0){
                 // re-send packet and update timer 
-                // printf(" i = %d 3and el timer a7ee a7ee  = %d \n",i, packet_buff[i].seqno);
                 int temp =  sendto(worker_sock, (void *)&(packet_buff[i]), (valid_timer[i]==1)?sizeof(pkt_t):sizeof(ack_t),
     				0, (struct sockaddr*) &client_addr, client_addr_len) ;
-                printf("timer expired pkt %d\n", i);
-                packet_loss_report();
-                printf("gowa el handler cwnd = %d\n",cwnd);
+                // packet_loss_report();
     			if (temp< 0)
     				timers[i] = TIME_OUT_VAL;
     			else {
@@ -163,14 +161,12 @@ void timer_handler(int sig) {
     			}
 
     		}else if (timers[i] < min_timer){
-    			// printf("min timer index = %d\n", i);
     			min_timer = timers[i];
     		}
     	}
     }
 
     if (min_timer > TIME_OUT_VAL){ // indicates that no timer is active (based on the intialization of min_timer)
-    	// printf("return from timer handler\n");
     	return;
     }
 
@@ -180,23 +176,18 @@ void timer_handler(int sig) {
     itimer.it_interval = timeout_tv;
     itimer.it_value = timeout_tv;
     setitimer(ITIMER_REAL, &itimer, NULL);    
-    // printf("return from timer handler\n");
 }
 
 
 void hand_shake(){
 	// adding file size to the request ack : my protocol .. i do what i want :P 
- 	int filesize = calc_file_size();
- 	// printf("filesize = %d\n", filesize);
-
 	ack_t pkt_ack;
  	ack_t req_ack = {8, 0, filesize} ;
  	int n = sendto(worker_sock, (void *)&req_ack, sizeof(req_ack), 0, (struct sockaddr*) &client_addr, client_addr_len);
  	if (n < 0)
  		perror("ERROR couldn't write to socket");
- 	// printf("sent request ACK\n");
 
-	//start timer 
+	//start timer for request acceptance pkt
 	valid_timer[0] = 2; // quick and dirty sol: 2 indicates that the packet to resent is ack_t
 	//also put the  ack_pkt in the data_pkts buffer 
 	memcpy(packet_buff, &req_ack, sizeof(ack_t));
@@ -206,15 +197,16 @@ void hand_shake(){
 	itimer.it_value = timeout_tv;
 	setitimer(ITIMER_REAL, &itimer, NULL);
 	active_timers++;
-
 	
-	// printf("going to wait for ack ack\n");
+	if(filesize < 0) // no need to complete handshake
+		return;
+
 	// this call is supposed to block until an ACK is received ... signal handlers are executed in another thread
 	recvfrom(worker_sock, &pkt_ack, sizeof(ack_t), 0, (struct sockaddr*) &client_addr, &client_addr_len);
+
+	// handshaking complete reset values of active_times
 	active_timers--;
 	valid_timer[0] = -1;
-
-	// printf("ack ack %d \n", pkt_ack.seqno);
 }
 
 
@@ -237,35 +229,28 @@ void rdt(){
 	timeval  timer_difference; 
 
 
-	// printf("buffer = %s\n",file_buff);
 
-	// printf("starting to read from file N = %d  PKT_DATA_SIZE = %d\n",N,PKT_DATA_SIZE);
 	// first time = true fill all the buffer
 	m = fread(file_buff, PKT_DATA_SIZE, N, file);
-	// printf("read from file %d bytes\n",m*PKT_DATA_SIZE);
-	printf("buffer = %s\n",file_buff);
 
 	if (m < 0)
 		perror("couldn't read from file");
 	
-	if(m < N){
+	if(m < N)
 		end = m;
-		// printf("file size is less than 1 buffer");
-	}
-
+	
 
 	for (seqno = buff_base;  ;	seqno = (seqno + 1) % N) {
-		printf("cwnd = %d seqno = %d base = %d  end = %d\n", cwnd, seqno, buff_base, end);
+		// printf("cwnd = %d seqno = %d base = %d  end = %d\n", cwnd, seqno, buff_base, end);
 		
 		// send packet 
 		process_pkt(seqno, data_offset);
-		// if((pkt_cnt++)%loss_cnt){
-		if ( (rand()%loss_cnt) > 0 ){
+
+		if ( (rand()%100) >  loss_cnt){ // if the random num gen [0-->10] is > than the number of packets to drop
 			n = sendto(worker_sock, (void *)&(packet_buff[seqno]), sizeof(pkt_t), 0, (struct sockaddr*) &client_addr, client_addr_len);
-			printf("sent pkt[%c] seqno = %d\n", packet_buff[seqno].data[0], packet_buff[seqno].seqno);
 		}else {
-			printf("loss \n");
-			packet_loss_report();
+			// loss occured 
+			// printf("loss \n");
 		}
 	 	
 	 	// start timer
@@ -291,7 +276,7 @@ void rdt(){
 		//or don't send the last packet (end).
 
 		if (seqno ==  end ){
-			printf("server is leaving ... FUCK this shit\n");
+			printf("Transmission Complete :D \n");
 			break;
 		}
 
@@ -300,9 +285,8 @@ void rdt(){
 		while (r > 0){
 			//FIXME refactor ack_seqno to pkt_no
 			ack_seqno = (pkt_ack.seqno / PKT_DATA_SIZE) % MAX_SEQ_N;
-			// ack_seqno = pkt_ack.seqno ;
-			// printf(" >>> received ACK seqno = %d  %d\n",pkt_ack.seqno, ack_seqno);
-			packet_received_report();
+
+			// packet_received_report();
 			valid_timer[ack_seqno] = 0;
 			if (ack_seqno == buff_base)
 				while (valid_timer[ack_seqno++]==0){ // if a valid timer ==0 then the timer is off
@@ -312,17 +296,13 @@ void rdt(){
 			r = recvfrom(worker_sock, &pkt_ack, sizeof(ack_t), MSG_DONTWAIT, (struct sockaddr*) &client_addr, &client_addr_len);
 		} 					
 
-
-		// printf(">>>>> buff_base = %d\n",buff_base);
 		// copy the last window of the buffer (was kept while the whole buffer was copied) [N-cwnd-->N]
 		if (buff_base == N ) {
 			data_offset+=BUFF_SIZE;
 			if ( !EOF_reached && !start){
 				m = fread(file_buff+(N-prev_cwnd)*PKT_DATA_SIZE, PKT_DATA_SIZE, prev_cwnd, file);
-				// printf("buffer = %s\n",file_buff);
 
 				if(m < prev_cwnd){
-					printf("EOF reached\n");
 					EOF_reached = 1;
 					end = N-prev_cwnd + m;
 				}
@@ -339,7 +319,6 @@ void rdt(){
 				// printf("buffer = %s\n",file_buff);
 
 				if(m < N-cwnd){
-					printf("EOF reached\n");
 					EOF_reached = 1;
 					end = m;
 				}
@@ -347,28 +326,39 @@ void rdt(){
 			// printf("\n");
 
 			if (seqno == (buff_base+cwnd)%N && !start){
-				printf("hanaam nena\n");
 				sleep(1000000);
 			}
 			buff_base %= N;
 		}
+
+	printf("## return rdt() ###\n");	
 }
 
 
 void connect(){
+	
+	// initialization require for conestion control
 	// intialize the starting cwnd
-	cwnd  = 1;
-	ssthreshold = MAX_SEQ_N/2;
+	// cwnd  = 1;
+	// ssthreshold = MAX_SEQ_N/2;
+
 	//intializing valid_timer
 	int i;
 	for(i=0; i < MAX_SEQ_N; i++)
 		valid_timer[i] = -1;
 
 	open_file(file_name);
-	hand_shake();
 
-	// printf ("starting data transfer\n");
-	rdt();
+	if (file == NULL){ // can't open file
+		filesize = -1;
+		hand_shake();
+	}else {
+		filesize = calc_file_size();
+		hand_shake();
+		rdt();
+	}
+	printf("operation [completed]\n");
+
 }
 
 
@@ -408,7 +398,7 @@ int main(){
  		// receive request
  		// since we know the server the request message only contains the file path/name : my protocol my rules :P
 	 	int	recvlen = recvfrom(main_sock, file_name, sizeof(file_name), 0, (struct sockaddr*) &client_addr, &client_addr_len);
-	 	printf("%s\n",file_name); 	
+	 	printf("requested file is: %s\n",file_name); 	
 
 	 	if ( (worker_pid = fork()) < 0) {
 	 		perror("ERROR on forking a new worker process");
@@ -422,9 +412,8 @@ int main(){
   				perror("Error: Creating the worker socket");
   				return EXIT_FAILURE;
   			}
-  			printf("pid = %d\n", getpid());
-  				signal(SIGALRM, timer_handler);
 
+  			signal(SIGALRM, timer_handler);
   			connect();
   			exit(EXIT_SUCCESS);
    		} else { // pid != 0 then we are in the parent;

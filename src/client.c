@@ -17,10 +17,10 @@
 
 #define CLIENT_PORT_NO 9999
 #define SERVER_PORT_NO 7777 
-#define MAX_cwnd 10
+#define MAX_cwnd 50
 
 
-#define PKT_DATA_SIZE (1)
+#define PKT_DATA_SIZE (1024)
 #define HEADER_SIZE 8
 #define MAX_SEQ_N (4*MAX_cwnd) // FIXME how should the client know that  
 #define BUFFER_SIZE (PKT_DATA_SIZE*MAX_SEQ_N) //file buffer size in bytes
@@ -45,27 +45,34 @@ int socket_fd;
 struct sockaddr_in server_addr, client_addr;
 socklen_t server_addr_len, client_addr_len;
 
-// char file_cname[] = "oblivion.mp3";
-// char output_file_name[] = "oblivion_client.mp3";
+char file_cname[] = "oblivion.mp3";
+char output_file_name[] = "oblivion_client.mp3";
 
-char file_cname[] = "test.txt";
-char output_file_name[] = "test_client.txt";
+// char file_cname[] = "test.txt";
+// char output_file_name[] = "test_client.txt";
 
 int filesize;
 
 unsigned char buffer[BUFFER_SIZE];
 int acked[MAX_cwnd]; // boolean indicator for each pkt in the window .. indicates acked or not
 
-int parse_response() {
+void parse_response() {
    ack_t ack = {8, 0, -1};
    ack_t recv_ack;
    pkt_t pkt;
+
+
    int r = recvfrom(socket_fd, &recv_ack, sizeof(recv_ack), 0, (struct sockaddr*) &server_addr, &server_addr_len);
-   printf("receiv ACK pkt sqno = %d\n",recv_ack.seqno);
 
     filesize = recv_ack.seqno; // file size --> my protocol i do what i want :P :D :D 
     // and of course assuming that the max file size is 4GB 
     printf("filesize  = %d\n", filesize);
+    if (filesize < 0){
+        printf("FILE NOT FOUND!!\n");
+        return;
+    }
+    
+
     int n;
     while (1){
         // loop while the server starts sending data pkts
@@ -74,31 +81,26 @@ int parse_response() {
 
         // ack the ACK of the server (accepting connection ack)
         n = sendto(socket_fd, &ack, sizeof(ack_t), 0, (struct sockaddr*) &server_addr, server_addr_len);
-        printf("receiv ACK pkt sqno = %d\n",ack.seqno);
 
         r = recvfrom(socket_fd, &pkt, sizeof(pkt_t), 0, (struct sockaddr*) &server_addr, &server_addr_len);
 
-        if (pkt.len != sizeof(ack_t))    {
-            // printf("breaaaaak\n");
+        if (pkt.len != sizeof(ack_t))    // received packet is the 1st data packet
             break;
-        }
+        
     }
 
- 	// int16_t len = buffer[0]|buffer[1]<<8;
- 	// printf("len = %d\n",len);
- 	// printf("%d %d %d %d\n",(int) buffer[0], (int) buffer[1], (int) buffer[2], (int) buffer[3]);
     FILE *op = fopen(output_file_name, "wb");
 
-    //FIXME move to top
     int i;
     int seqno;
     int base  = 0;
-    int ws = 5; //TODO FIX
+    int ws = MAX_cwnd; 
     int end = MAX_SEQ_N + 1; // index of last packet should be received
     int MAX_PKT_CNT = MAX_SEQ_N;
     int iscopied = 0; // flag used not to copy the first part of the buffer many times
     int start = 1; // indicator that its the first time to go (buffer never filled)
     int offset = 0; //offset from the start of the file
+
     while(1){
         // assuming that the server and the client share the same MAX_SEQ_N 
         // Hence the seqno will overlap from the server (no need to take mod here)
@@ -117,17 +119,10 @@ int parse_response() {
             // this case should never happen
             perror("receiving a packet with a seqno > window");
         }else {
-            // printf("general case\n");
-            // printf("  >> base = %d  seqno = %d\n",base,seqno);
-
 
             memcpy(&(buffer[seqno%BUFFER_SIZE]), &(pkt.data), PKT_DATA_SIZE );
-            // printf("  >> buffer = %s\n",buffer);
             filesize -= PKT_DATA_SIZE;    
-
             acked[pkt_index] = 1 ;
-
-            // printf("acked pkt %d\n", ((int)ceil(1.0*seqno/PKT_DATA_SIZE))%MAX_SEQ_N);
 
 
             while(base<MAX_SEQ_N && acked[base]){
@@ -135,7 +130,6 @@ int parse_response() {
                 base=(base + 1)%MAX_PKT_CNT; // move window to pass all acked pkts
             }
 
-            // printf(" >>>> base = %d\n",base );
 
             if (base == 0 & !start ){
                 // write the last window if the buffer.
@@ -156,10 +150,8 @@ int parse_response() {
 
             ack.seqno = seqno ;
             n = sendto(socket_fd, &ack, sizeof(ack_t), 0, (struct sockaddr*) &server_addr, server_addr_len);            
-            // printf("send ACK pkt sqno = %d\n",seqno);
 
-
-            if(filesize <= 0){
+            if(filesize <= 0){ // why the < ---> if the last packet has data size < PKT_DATA_SIZE
 
                     // in the next line filesize should be = 0 or in negative ?? --> the data of the last packet was < PKT_DATA_SIZE
                     if (base < MAX_SEQ_N - ws || start){ // i'm sure that the last ws of the buffer is written to the file
@@ -174,7 +166,6 @@ int parse_response() {
                 }   
             }
 
-            // printf("\n\n");
             r = recvfrom(socket_fd, &pkt, sizeof(pkt_t), 0, (struct sockaddr*) &server_addr, &server_addr_len);
 
     }
@@ -196,7 +187,6 @@ int main(int argc, char *argv[]) {
        exit(EXIT_FAILURE);
     }
 
-   // char file_cname[] = "test.txt";
 
    socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
    if (socket_fd < 0)
@@ -230,9 +220,9 @@ int main(int argc, char *argv[]) {
     	perror("ERROR couldn't write to socket");
 
     
-    printf("[starting] read_response\n");
+    printf("[starting] transmission\n");
     parse_response();
-    printf("[closing] read_response\n");
+    printf("[closing] transmission\n");
 
     close(socket_fd);
 
