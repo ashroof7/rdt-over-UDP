@@ -8,7 +8,7 @@ Reliable data trasfer over UDP using selective repeat algorithm (stop and wait i
 
 TODO
 ----
-++>fix congestion control handling (pulled back)
-++>calculate check sum or crc and ignore package with corrupted data.
+> + fix congestion control handling (pulled back)
+> + calculate check sum or crc and ignore package with corrupted data.
 
 [![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/leonardo7/rdt-over-udp/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
